@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes" />
+  <meta name="theme-color" content="#1e40af" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>MyReceiptApp - レシート管理PWA</title>
+  <link rel="manifest" href="./manifest.json" />
+  <script src="https://accounts.google.com/gsi/client" async defer></script>
+  <style>
+    :root {
+      --bg: #f1f5f9;
+      --card: #ffffff;
+      --primary: #1e40af;
+      --primary-light: #dbeafe;
+      --accent: #0284c7;
+      --success: #16a34a;
+      --warning: #d97706;
+      --warning-bg: #fef3c7;
+      --danger: #dc2626;
+      --danger-bg: #fee2e2;
+      --text: #0f172a;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --radius: 14px;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Yu Gothic UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      padding-bottom: 84px;
+      min-height: 100vh;
+    }
+
+    /* ヘッダー */
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 30;
+      background: linear-gradient(135deg, #1e3a8a, #1d4ed8);
+      color: #fff;
+      padding: 14px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      box-shadow: 0 2px 10px rgba(15, 23, 42, 0.15);
+    }
+
+    header h1 {
+      font-size: 1.1rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+    }
+
+    .auth-badge {
+      font-size: 0.75rem;
+      padding: 5px 10px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.18);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.3);
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .auth-badge.connected {
+      background: rgba(22, 163, 74, 0.85);
+      border-color: #86efac;
+    }
+
+    main {
+      max-width: 680px;
+      margin: 0 auto;
+      padding: 14px;
+    }
+
+    .tab-panel {
+      display: none;
+    }
+
+    .tab-panel.active {
+      display: block;
+    }
+
+    .card {
+      background: var(--card);
+      border-radius: var(--radius);
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: 0 1px 3px rgba(15, 23, 42, 0.06);
+      border: 1px solid var(--border);
+    }
+
+    .card-title {
+      font-size: 0.95rem;
+      font-weight: 700;
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    /* 撮影・ファイル選択ボタン群 */
+    .capture-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      padding: 13px 16px;
+      border-radius: 12px;
+      font-size: 0.92rem;
+      font-weight: 700;
+      border: none;
+      cursor: pointer;
+      transition: transform 0.1s, opacity 0.15s;
+      text-decoration: none;
+      width: 100%;
+    }
+
+    .btn:active {
+      transform: scale(0.98);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      color: #fff;
+    }
+
+    .btn-accent {
+      background: var(--accent);
+      color: #fff;
+    }
+
+    .btn-success {
+      background: var(--success);
+      color: #fff;
+    }
+
+    .btn-outline {
+      background: #fff;
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+
+    .btn-danger-outline {
+      background: #fff;
+      color: var(--danger);
+      border: 1px solid #fecaca;
+    }
+
+    input[type="file"] {
+      display: none;
+    }
+
+    /* キュー一覧 */
+    .queue-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      margin-top: 12px;
+    }
+
+    .queue-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: #f8fafc;
+    }
+
+    .queue-thumb {
+      width: 54px;
+      height: 54px;
+      border-radius: 8px;
+      object-fit: cover;
+      background: #e2e8f0;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: #475569;
+    }
+
+    .queue-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .queue-name {
+      font-size: 0.85rem;
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .queue-meta {
+      font-size: 0.75rem;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+
+    .queue-del {
+      background: none;
+      border: none;
+      color: var(--danger);
+      font-size: 0.8rem;
+      font-weight: 700;
+      padding: 6px 10px;
+      cursor: pointer;
+    }
+
+    /* フィルタ・検索バー */
+    .filter-bar {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .input-field {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 0.9rem;
+      background: #fff;
+    }
+
+    /* レシート一覧カード */
+    .receipt-list {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .receipt-card {
+      background: #fff;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 13px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .receipt-card:active {
+      background: #f1f5f9;
+    }
+
+    .receipt-card.discrepancy {
+      border-left: 5px solid var(--warning);
+      background: #fffbeb;
+    }
+
+    .rcpt-left {
+      min-width: 0;
+      flex: 1;
+    }
+
+    .rcpt-date-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-bottom: 3px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 6px;
+      font-size: 0.7rem;
+      font-weight: 700;
+    }
+
+    .badge-cat {
+      background: var(--primary-light);
+      color: var(--primary);
+    }
+
+    .badge-pdf {
+      background: #fce7f3;
+      color: #be185d;
+    }
+
+    .badge-warn {
+      background: var(--warning-bg);
+      color: var(--warning);
+    }
+
+    .rcpt-store {
+      font-size: 0.96rem;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .rcpt-sub {
+      font-size: 0.76rem;
+      color: var(--muted);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      margin-top: 2px;
+    }
+
+    .rcpt-amount {
+      font-size: 1.08rem;
+      font-weight: 800;
+      color: var(--text);
+      white-space: nowrap;
+    }
+
+    /* ボトムナビゲーション */
+    nav.bottom-nav {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      height: 68px;
+      background: #fff;
+      border-top: 1px solid var(--border);
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      z-index: 40;
+      box-shadow: 0 -2px 10px rgba(15, 23, 42, 0.05);
+    }
+
+    .nav-btn {
+      background: none;
+      border: none;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 3px;
+      color: var(--muted);
+      font-size: 0.73rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .nav-btn.active {
+      color: var(--primary);
+      font-weight: 700;
+    }
+
+    .nav-icon {
+      font-size: 1.25rem;
+      line-height: 1;
+    }
+
+    /* ==========================================================
+       詳細モーダル（上：画像 / 下：全抽出項目 の縦並び分割画面）
+       ========================================================== */
+    .detail-overlay {
+      position: fixed;
+      inset: 0;
+      background: #0f172a;
+      z-index: 100;
+      display: none;
+      flex-direction: column;
+    }
+
+    .detail-overlay.open {
+      display: flex;
+    }
+
+    .detail-topbar {
+      height: 50px;
+      background: #0f172a;
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 14px;
+      border-bottom: 1px solid #334155;
+      flex-shrink: 0;
+    }
+
+    .detail-topbar-title {
+      font-size: 0.92rem;
+      font-weight: 700;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .detail-close-btn {
+      background: rgba(255, 255, 255, 0.14);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      padding: 6px 12px;
+      font-size: 0.82rem;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    /* 上半分：画像プレビュー領域 */
+    .detail-image-pane {
+      height: 44vh;
+      min-height: 210px;
+      background: #020617;
+      position: relative;
+      overflow: auto;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-bottom: 2px solid #334155;
+      flex-shrink: 0;
+    }
+
+    .detail-image-pane img {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+      transition: transform 0.2s ease;
+    }
+
+    .detail-image-pane.zoomed {
+      align-items: flex-start;
+      justify-content: flex-start;
+    }
+
+    .detail-image-pane.zoomed img {
+      max-width: none;
+      max-height: none;
+      width: 180%;
+    }
+
+    .image-toolbar {
+      position: absolute;
+      bottom: 10px;
+      right: 10px;
+      display: flex;
+      gap: 6px;
+    }
+
+    .img-tool-btn {
+      background: rgba(15, 23, 42, 0.8);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      border-radius: 8px;
+      padding: 6px 10px;
+      font-size: 0.75rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    /* 下半分：全抽出項目スクロール領域 */
+    .detail-data-pane {
+      flex: 1;
+      background: #f8fafc;
+      overflow-y: auto;
+      padding: 14px;
+    }
+
+    .field-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      background: #fff;
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid var(--border);
+      margin-bottom: 12px;
+    }
+
+    .field-box {
+      padding: 4px 2px;
+    }
+
+    .field-box.full {
+      grid-column: 1 / -1;
+    }
+
+    .field-label {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-bottom: 2px;
+    }
+
+    .field-value {
+      font-size: 0.9rem;
+      font-weight: 700;
+      word-break: break-all;
+    }
+
+    .field-value.large-amount {
+      font-size: 1.25rem;
+      color: var(--primary);
+    }
+
+    .items-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1px solid var(--border);
+      font-size: 0.82rem;
+    }
+
+    .items-table th {
+      background: #f1f5f9;
+      color: #334155;
+      text-align: left;
+      padding: 8px 10px;
+      font-weight: 700;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .items-table td {
+      padding: 8px 10px;
+      border-bottom: 1px solid #f1f5f9;
+    }
+
+    .items-table td.num,
+    .items-table th.num {
+      text-align: right;
+      white-space: nowrap;
+    }
+
+    .status-toast {
+      position: fixed;
+      bottom: 80px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(15, 23, 42, 0.92);
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 999px;
+      font-size: 0.83rem;
+      font-weight: 600;
+      z-index: 200;
+      display: none;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.25);
+      max-width: 92vw;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>MyReceiptApp</h1>
+    <button id="authBadgeBtn" class="auth-badge" type="button">Google未接続</button>
+  </header>
+
+  <main>
+    <!-- ==================== タブ1: 撮影・送信 ==================== -->
+    <section id="tab-capture" class="tab-panel active">
+      <div class="card">
+        <div class="card-title">
+          <span>レシート撮影・PDF追加</span>
+          <span style="font-size:0.75rem;color:var(--muted);">長辺1800px自動圧縮</span>
+        </div>
+        <div class="capture-grid">
+          <label class="btn btn-primary" for="cameraInput">
+            📷 カメラで撮影
+          </label>
+          <input id="cameraInput" type="file" accept="image/*" capture="environment" />
+
+          <label class="btn btn-accent" for="fileInput">
+            📁 画像 / PDF追加
+          </label>
+          <input id="fileInput" type="file" accept="image/*,application/pdf" multiple />
+        </div>
+        <p style="font-size:0.77rem;color:var(--muted);line-height:1.4;">
+          ※電波がない場所でもスマホ内の <code>IndexedDB</code> に安全に保存され、いつでも一括送信できます。
+        </p>
+      </div>
+
+      <div class="card">
+        <div class="card-title">
+          <span>送信待ちキュー (<span id="queueCount">0</span>件)</span>
+          <button id="clearQueueBtn" class="queue-del" type="button" style="display:none;">全削除</button>
+        </div>
+
+        <button id="uploadAllBtn" class="btn btn-success" type="button" disabled>
+          ☁️ Googleドライブ (inbox) へ一括送信
+        </button>
+
+        <div id="uploadProgressBox" style="display:none;margin-top:10px;font-size:0.82rem;color:var(--primary);font-weight:600;"></div>
+
+        <div id="queueList" class="queue-list"></div>
+      </div>
+    </section>
+
+    <!-- ==================== タブ2: レシート一覧 ==================== -->
+    <section id="tab-list" class="tab-panel">
+      <div class="card" style="padding:12px;">
+        <div class="filter-bar">
+          <input id="searchInput" class="input-field" type="search" placeholder="店舗名・品目・インボイス番号で検索..." />
+          <input id="monthFilter" class="input-field" type="month" style="max-width:145px;" />
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <div style="font-size:0.82rem;color:var(--muted);">
+            表示: <strong id="listCountLabel">0</strong>件 ／ 合計: <strong id="listTotalLabel">¥0</strong>
+          </div>
+          <button id="refreshListBtn" class="btn btn-outline" type="button" style="width:auto;padding:7px 12px;font-size:0.8rem;">
+            🔄 最新読込
+          </button>
+        </div>
+      </div>
+
+      <div id="receiptListContainer" class="receipt-list"></div>
+    </section>
+
+    <!-- ==================== タブ3: 設定 ==================== -->
+    <section id="tab-settings" class="tab-panel">
+      <div class="card">
+        <div class="card-title">Google Drive API 連携設定</div>
+        <p style="font-size:0.8rem;color:var(--muted);margin-bottom:10px;line-height:1.5;">
+          Google Cloud Console で発行した <strong>OAuth 2.0 クライアントID（ウェブアプリケーション）</strong> を入力して保存してください。
+        </p>
+        <label style="font-size:0.78rem;font-weight:700;display:block;margin-bottom:4px;">OAuth クライアントID</label>
+        <input id="clientIdInput" class="input-field" type="text" placeholder="xxxxx.apps.googleusercontent.com" style="margin-bottom:10px;" />
+
+        <label style="font-size:0.78rem;font-weight:700;display:block;margin-bottom:4px;">Googleドライブ親フォルダ名</label>
+        <input id="rootFolderInput" class="input-field" type="text" value="MyReceiptApp" style="margin-bottom:12px;" />
+
+        <div style="display:flex;gap:8px;">
+          <button id="saveSettingsBtn" class="btn btn-primary" type="button">設定を保存</button>
+          <button id="googleLoginBtn" class="btn btn-success" type="button">Googleログイン</button>
+        </div>
+        <div id="folderStatusBox" style="margin-top:12px;font-size:0.8rem;color:var(--muted);"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ==================== 詳細ビュー（上：画像 / 下：全抽出項目） ==================== -->
+  <div id="detailOverlay" class="detail-overlay" aria-hidden="true">
+    <div class="detail-topbar">
+      <div id="detailTitle" class="detail-topbar-title">レシート詳細</div>
+      <button id="closeDetailBtn" class="detail-close-btn" type="button">✕ 閉じる</button>
+    </div>
+
+    <!-- 上：画像プレビュー -->
+    <div id="detailImagePane" class="detail-image-pane">
+      <div id="detailImageLoading" style="color:#94a3b8;font-size:0.85rem;">画像を読み込み中...</div>
+      <img id="detailImage" alt="レシート画像プレビュー" style="display:none;" />
+      <div class="image-toolbar">
+        <button id="toggleZoomBtn" class="img-tool-btn" type="button">🔍 拡大/全体</button>
+        <button id="openOriginalDriveBtn" class="img-tool-btn" type="button" style="display:none;">📄 原本を開く</button>
+      </div>
+    </div>
+
+    <!-- 下：全抽出項目 -->
+    <div id="detailDataPane" class="detail-data-pane"></div>
+  </div>
+
+  <div id="statusToast" class="status-toast"></div>
+
+  <!-- ボトムナビ -->
+  <nav class="bottom-nav">
+    <button class="nav-btn active" data-tab="tab-capture" type="button">
+      <span class="nav-icon">📷</span>
+      <span>撮影・送信</span>
+    </button>
+    <button class="nav-btn" data-tab="tab-list" type="button">
+      <span class="nav-icon">🧾</span>
+      <span>レシート一覧</span>
+    </button>
+    <button class="nav-btn" data-tab="tab-settings" type="button">
+      <span class="nav-icon">⚙️</span>
+      <span>設定</span>
+    </button>
+  </nav>
+
+  <script src="./app.js"></script>
+</body>
+</html>
+

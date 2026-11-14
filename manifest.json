@@ -1,0 +1,20 @@
+{
+  "name": "MyReceiptApp - スマートレシート管理",
+  "short_name": "MyReceipt",
+  "description": "レシート撮影・PDFオフライン保存＆Googleドライブ同期・構造化データ閲覧PWA",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f172a",
+  "theme_color": "#1e40af",
+  "icons": [
+    {
+      "src": "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Crect width='512' height='512' rx='112' fill='%231e40af'/%3E%3Cpath d='M136 96h240a16 16 0 0 1 16 16v304l-42-28-42 28-42-28-42 28-42-28-42 28V112a16 16 0 0 1 16-16z' fill='%23ffffff'/%3E%3Cpath d='M184 176h144M184 232h144M184 288h96' stroke='%231e40af' stroke-width='24' stroke-linecap='round'/%3E%3C/svg%3E",
+      "sizes": "512x512",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
+
