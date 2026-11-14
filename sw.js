@@ -1,4 +1,4 @@
-const CACHE_NAME = "my-receipt-app-pwa-v2";
+const CACHE_NAME = "my-receipt-app-pwa-v3";
 const ASSETS = [
   "./",
   "./index.html",
@@ -29,29 +29,19 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  const url = new URL(event.request.url);
-  // Google API / OAuth 通信はキャッシュしない
-  if (
-    url.hostname.includes("googleapis.com") ||
-    url.hostname.includes("accounts.google.com") ||
-    event.request.method !== "GET"
-  ) {
+  if (event.request.method !== "GET" || !event.request.url.startsWith(self.location.origin)) {
     return;
   }
 
   event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const networkFetch = fetch(event.request)
-        .then((response) => {
-          if (response && response.status === 200 && url.origin === self.location.origin) {
-            const clone = response.clone();
-            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-          }
-          return response;
-        })
-        .catch(() => cached);
-      return cached || networkFetch;
-    })
+    fetch(event.request)
+      .then((response) => {
+        if (response && response.status === 200) {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+        }
+        return response;
+      })
+      .catch(() => caches.match(event.request))
   );
 });
-

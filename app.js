@@ -1,9 +1,9 @@
 /**
  * MyReceiptApp PWA メインスクリプト (app.js)
  * - 撮影画像のブラウザ内長辺1800px JPEG圧縮
- * - IndexedDB へのオフラインキュー保存・管理
+ * - IndexedDB へのオフラインキュー保存・管理（Android Chrome 対策として Base64 DataURL 形式で永続化）
  * - Google Identity Services (OAuth2) & Google Drive API v3 連携
- * - MyReceiptApp/inbox への一括アップロード
+ * - MyReceiptApp/inbox への一括アップロード（単一 Uint8Array バッファ送信による Android Failed to fetch 回避）
  * - MyReceiptApp/data/receipts.json と archive/ 画像の取得・縦並び詳細表示
  */
 
@@ -13,6 +13,7 @@ const QUEUE_STORE = "upload_queue";
 const MAX_IMAGE_EDGE = 1800;
 const JPEG_QUALITY = 0.84;
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
+const DEFAULT_CLIENT_ID = "752942004526-6b11ab4uacg328ol1e18fipfq1hl4ug5.apps.googleusercontent.com";
 
 let dbInstance = null;
 let accessToken = sessionStorage.getItem("gdrive_access_token") || null;
@@ -31,7 +32,7 @@ let driveCache = {
 // トースト通知
 // =========================================================
 let toastTimer = null;
-function showToast(msg, duration = 3200) {
+function showToast(msg, duration = 3500) {
   const el = document.getElementById("statusToast");
   if (!el) return;
   el.textContent = msg;
@@ -104,9 +105,55 @@ async function clearAllQueueItems() {
 }
 
 // =========================================================
+// バイナリ変換ヘルパー (Android Chrome の IndexedDB Blob 消失バグ対策)
+// =========================================================
+function blobToDataUrl(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(new Error("ファイルのDataURL変換に失敗しました"));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function blobToUint8Array(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(new Uint8Array(reader.result));
+    reader.onerror = () => reject(new Error("キャッシュされた画像の読み込みに失敗しました。一度「全削除」して再度画像を追加してください。"));
+    reader.readAsArrayBuffer(blob);
+  });
+}
+
+function dataUrlToUint8Array(dataUrl) {
+  const commaIdx = dataUrl.indexOf(",");
+  const base64 = commaIdx >= 0 ? dataUrl.slice(commaIdx + 1) : dataUrl;
+  const binaryStr = atob(base64);
+  const len = binaryStr.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    bytes[i] = binaryStr.charCodeAt(i);
+  }
+  return bytes;
+}
+
+async function extractItemBytes(item) {
+  if (item.dataUrl && typeof item.dataUrl === "string") {
+    return dataUrlToUint8Array(item.dataUrl);
+  }
+  if (item.arrayBuffer instanceof ArrayBuffer) {
+    return new Uint8Array(item.arrayBuffer);
+  }
+  if (item.blob) {
+    return await blobToUint8Array(item.blob);
+  }
+  throw new Error("送信データが見つかりません。一度キューから削除して再追加してください。");
+}
+
+// =========================================================
 // 画像の長辺1800px JPEG圧縮
 // =========================================================
-function compressImageToJpegBlob(file) {
+function compressImageToJpegDataUrl(file) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(file);
@@ -129,14 +176,13 @@ function compressImageToJpegBlob(file) {
       ctx.fillStyle = "#ffffff";
       ctx.fillRect(0, 0, width, height);
       ctx.drawImage(img, 0, 0, width, height);
-      canvas.toBlob(
-        (blob) => {
-          if (!blob) return reject(new Error("画像圧縮に失敗しました"));
-          resolve(blob);
-        },
-        "image/jpeg",
-        JPEG_QUALITY
-      );
+      try {
+        const dataUrl = canvas.toDataURL("image/jpeg", JPEG_QUALITY);
+        const approxSize = Math.round(((dataUrl.length - dataUrl.indexOf(",") - 1) * 3) / 4);
+        resolve({ dataUrl, size: approxSize });
+      } catch (e) {
+        reject(new Error("画像圧縮に失敗しました: " + e.message));
+      }
     };
     img.onerror = () => {
       URL.revokeObjectURL(url);
@@ -167,27 +213,28 @@ async function handleSelectedFiles(fileList) {
     try {
       const isPdf = file.type === "application/pdf" || file.name.toLowerCase().endsWith(".pdf");
       if (isPdf) {
+        const dataUrl = await blobToDataUrl(file);
         const safeName = makeTimestampFilename("pdf", "pdf");
         await addQueueItem({
           filename: safeName,
           originalName: file.name,
           mimeType: "application/pdf",
           fileType: "pdf",
-          blob: file,
+          dataUrl: dataUrl,
           size: file.size,
           createdAt: new Date().toLocaleString("ja-JP")
         });
         added++;
       } else if (file.type.startsWith("image/") || /\.(jpe?g|png|webp|heic)$/i.test(file.name)) {
-        const compressedBlob = await compressImageToJpegBlob(file);
+        const { dataUrl, size } = await compressImageToJpegDataUrl(file);
         const safeName = makeTimestampFilename("rcpt", "jpg");
         await addQueueItem({
           filename: safeName,
           originalName: file.name,
           mimeType: "image/jpeg",
           fileType: "image",
-          blob: compressedBlob,
-          size: compressedBlob.size,
+          dataUrl: dataUrl,
+          size: size,
           createdAt: new Date().toLocaleString("ja-JP")
         });
         added++;
@@ -227,14 +274,20 @@ async function renderQueueList() {
     } else {
       thumbEl = document.createElement("img");
       thumbEl.className = "queue-thumb";
-      thumbEl.src = URL.createObjectURL(item.blob);
+      if (item.dataUrl) {
+        thumbEl.src = item.dataUrl;
+      } else if (item.blob) {
+        try {
+          thumbEl.src = URL.createObjectURL(item.blob);
+        } catch (_) {}
+      }
     }
 
     const info = document.createElement("div");
     info.className = "queue-info";
     info.innerHTML = `
       <div class="queue-name">${escapeHtml(item.originalName || item.filename)}</div>
-      <div class="queue-meta">${formatBytes(item.size)} ・ ${escapeHtml(item.createdAt)}</div>
+      <div class="queue-meta">${formatBytes(item.size || 0)} ・ ${escapeHtml(item.createdAt || "")}</div>
     `;
 
     const delBtn = document.createElement("button");
@@ -256,8 +309,6 @@ async function renderQueueList() {
 // =========================================================
 // Google OAuth2 & Google Drive API v3
 // =========================================================
-const DEFAULT_CLIENT_ID = "752942004526-6b11ab4uacg328ol1e18fipfq1hl4ug5.apps.googleusercontent.com";
-
 function getSettings() {
   return {
     clientId: (localStorage.getItem("myreceipt_client_id") || DEFAULT_CLIENT_ID).trim(),
@@ -276,9 +327,9 @@ function updateAuthUI() {
   }
 }
 
-function ensureAccessToken() {
+function ensureAccessToken(forcePrompt = false) {
   return new Promise((resolve, reject) => {
-    if (accessToken) return resolve(accessToken);
+    if (accessToken && !forcePrompt) return resolve(accessToken);
 
     const { clientId } = getSettings();
     if (!clientId) {
@@ -307,25 +358,38 @@ function ensureAccessToken() {
       }
     });
 
-    tokenClient.requestAccessToken({ prompt: "" });
+    tokenClient.requestAccessToken({ prompt: forcePrompt ? "consent" : "" });
   });
 }
 
-async function driveFetch(url, options = {}) {
+async function driveFetch(url, options = {}, stepLabel = "API通信") {
   const token = await ensureAccessToken();
   const headers = new Headers(options.headers || {});
   headers.set("Authorization", `Bearer ${token}`);
-  const res = await fetch(url, { ...options, headers });
+
+  let res;
+  try {
+    res = await fetch(url, { ...options, headers });
+  } catch (netErr) {
+    throw new Error(`[${stepLabel}] 通信エラー (${netErr.message})。電波状況を確認するか、一度旧キューを削除して再撮影してください。`);
+  }
 
   if (res.status === 401) {
     accessToken = null;
     sessionStorage.removeItem("gdrive_access_token");
     updateAuthUI();
-    throw new Error("認証セッションが切れました。再度ボタンを押してログインしてください。");
+    throw new Error("認証の有効期限が切れました。右上のボタンから再ログインしてください。");
   }
   if (!res.ok) {
     const errText = await res.text();
-    throw new Error(`Drive API エラー (${res.status}): ${errText}`);
+    let detail = errText;
+    try {
+      const errJson = JSON.parse(errText);
+      if (errJson.error && errJson.error.message) {
+        detail = errJson.error.message;
+      }
+    } catch (_) {}
+    throw new Error(`[${stepLabel}] Drive API エラー (${res.status}): ${detail}`);
   }
   return res;
 }
@@ -337,7 +401,7 @@ async function findFolderId(name, parentId = null) {
     q += ` and '${parentId}' in parents`;
   }
   const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name)&pageSize=5`;
-  const res = await driveFetch(url);
+  const res = await driveFetch(url, {}, `フォルダ検索(${name})`);
   const data = await res.json();
   return data.files && data.files.length > 0 ? data.files[0].id : null;
 }
@@ -348,11 +412,15 @@ async function createFolder(name, parentId = null) {
     mimeType: "application/vnd.google-apps.folder"
   };
   if (parentId) metadata.parents = [parentId];
-  const res = await driveFetch("https://www.googleapis.com/drive/v3/files?fields=id", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(metadata)
-  });
+  const res = await driveFetch(
+    "https://www.googleapis.com/drive/v3/files?fields=id",
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(metadata)
+    },
+    `フォルダ作成(${name})`
+  );
   const data = await res.json();
   return data.id;
 }
@@ -388,30 +456,43 @@ async function ensureDriveStructure() {
 }
 
 // =========================================================
-// inbox への一括アップロード処理
+// inbox への一括アップロード処理（単一 Uint8Array メモリバッファ方式）
 // =========================================================
-async function uploadBlobToDriveFolder(blob, filename, mimeType, folderId) {
+async function uploadItemToDriveFolder(item, folderId) {
+  const fileBytes = await extractItemBytes(item);
   const metadata = {
-    name: filename,
+    name: item.filename,
     parents: [folderId]
   };
-  const boundary = "-------MyReceiptAppBoundary" + Date.now();
-  const metaPart =
+  const boundary = "MyReceiptAppBoundary" + Date.now();
+  const preambleStr =
     `--${boundary}\r\n` +
     `Content-Type: application/json; charset=UTF-8\r\n\r\n` +
     `${JSON.stringify(metadata)}\r\n` +
     `--${boundary}\r\n` +
-    `Content-Type: ${mimeType}\r\n\r\n`;
-  const closePart = `\r\n--${boundary}--`;
+    `Content-Type: ${item.mimeType || "image/jpeg"}\r\n\r\n`;
+  const epilogueStr = `\r\n--${boundary}--`;
 
-  const multipartBody = new Blob([metaPart, blob, closePart], {
-    type: `multipart/related; boundary=${boundary}`
-  });
+  const encoder = new TextEncoder();
+  const preambleBytes = encoder.encode(preambleStr);
+  const epilogueBytes = encoder.encode(epilogueStr);
 
-  await driveFetch("https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id", {
-    method: "POST",
-    body: multipartBody
-  });
+  const combined = new Uint8Array(preambleBytes.length + fileBytes.length + epilogueBytes.length);
+  combined.set(preambleBytes, 0);
+  combined.set(fileBytes, preambleBytes.length);
+  combined.set(epilogueBytes, preambleBytes.length + fileBytes.length);
+
+  await driveFetch(
+    "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id",
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": `multipart/related; boundary=${boundary}`
+      },
+      body: combined
+    },
+    `ファイル送信(${item.originalName || item.filename})`
+  );
 }
 
 async function uploadAllQueuedItems() {
@@ -431,7 +512,7 @@ async function uploadAllQueuedItems() {
     for (const item of items) {
       done++;
       progressBox.textContent = `送信中 (${done} / ${items.length}): ${item.originalName || item.filename}`;
-      await uploadBlobToDriveFolder(item.blob, item.filename, item.mimeType, inboxFolderId);
+      await uploadItemToDriveFolder(item, inboxFolderId);
       await deleteQueueItem(item.id);
       await renderQueueList();
     }
@@ -440,7 +521,7 @@ async function uploadAllQueuedItems() {
   } catch (err) {
     console.error(err);
     progressBox.textContent = `⚠️ 送信中断: ${err.message}`;
-    showToast(err.message);
+    showToast(err.message, 5000);
   } finally {
     await renderQueueList();
   }
@@ -457,7 +538,7 @@ async function fetchReceiptsJson() {
     const { dataFolderId } = await ensureDriveStructure();
     const q = `name = 'receipts.json' and '${dataFolderId}' in parents and trashed = false`;
     const searchUrl = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,modifiedTime)&pageSize=1`;
-    const searchRes = await driveFetch(searchUrl);
+    const searchRes = await driveFetch(searchUrl, {}, "receipts.json検索");
     const searchData = await searchRes.json();
 
     if (!searchData.files || searchData.files.length === 0) {
@@ -467,7 +548,7 @@ async function fetchReceiptsJson() {
     }
 
     const fileId = searchData.files[0].id;
-    const downloadRes = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`);
+    const downloadRes = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileId}?alt=media`, {}, "receipts.json取得");
     const json = await downloadRes.json();
     receiptsData = Array.isArray(json) ? json : [];
     renderReceiptList();
@@ -549,7 +630,6 @@ async function findDriveFileByRelativePath(relPath) {
   await ensureDriveStructure();
   let currentParentId = driveCache.rootFolderId;
 
-  // 途中フォルダを辿る (例: archive -> 2026-11)
   for (let i = 0; i < parts.length - 1; i++) {
     const folderName = parts[i];
     const cacheKey = `${currentParentId}/${folderName}`;
@@ -569,7 +649,7 @@ async function findDriveFileByRelativePath(relPath) {
   const fileName = parts[parts.length - 1].replace(/'/g, "\\'");
   const q = `name = '${fileName}' and '${currentParentId}' in parents and trashed = false`;
   const url = `https://www.googleapis.com/drive/v3/files?q=${encodeURIComponent(q)}&fields=files(id,name,webViewLink)&pageSize=1`;
-  const res = await driveFetch(url);
+  const res = await driveFetch(url, {}, "アーカイブ画像検索");
   const data = await res.json();
   return data.files && data.files.length > 0 ? data.files[0] : null;
 }
@@ -594,7 +674,6 @@ async function openReceiptDetail(r) {
   loadingEl.textContent = "アーカイブ画像を読み込み中...";
   openOrigBtn.style.display = "none";
 
-  // 下半分：全抽出項目のレンダリング
   const items = r.items || [];
   const itemsRowsHtml =
     items.length > 0
@@ -684,7 +763,6 @@ async function openReceiptDetail(r) {
   overlay.classList.add("open");
   overlay.setAttribute("aria-hidden", "false");
 
-  // 上半分：プレビュー画像（PDFの場合は生成済みの .preview.png）をDriveから取得
   const previewPath = r.preview_file || r.archive_file;
   try {
     if (driveCache.blobUrls[previewPath]) {
@@ -696,7 +774,7 @@ async function openReceiptDetail(r) {
       if (!fileMeta) {
         loadingEl.textContent = "プレビュー画像がGoogleドライブ上に見つかりませんでした";
       } else {
-        const mediaRes = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileMeta.id}?alt=media`);
+        const mediaRes = await driveFetch(`https://www.googleapis.com/drive/v3/files/${fileMeta.id}?alt=media`, {}, "プレビュー画像取得");
         const blob = await mediaRes.blob();
         const objUrl = URL.createObjectURL(blob);
         driveCache.blobUrls[previewPath] = objUrl;
@@ -706,7 +784,6 @@ async function openReceiptDetail(r) {
       }
     }
 
-    // 原本ファイルリンク（特にPDFの場合に便利）
     if (r.archive_file) {
       const origMeta = await findDriveFileByRelativePath(r.archive_file);
       if (origMeta && origMeta.webViewLink) {
@@ -744,26 +821,24 @@ function switchTab(tabId) {
 }
 
 window.addEventListener("DOMContentLoaded", async () => {
-  // Service Worker 登録
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.register("./sw.js").catch((e) => console.warn("SW登録スキップ:", e));
+    navigator.serviceWorker
+      .register("./sw.js")
+      .then((reg) => reg.update())
+      .catch((e) => console.warn("SW登録スキップ:", e));
   }
 
-  // 設定復元
   const { clientId, rootFolderName } = getSettings();
   document.getElementById("clientIdInput").value = clientId;
   document.getElementById("rootFolderInput").value = rootFolderName;
   updateAuthUI();
 
-  // キュー描画
   await renderQueueList();
 
-  // タブ切り替え
   document.querySelectorAll(".nav-btn").forEach((btn) => {
     btn.addEventListener("click", () => switchTab(btn.dataset.tab));
   });
 
-  // ファイル・カメラ入力
   document.getElementById("cameraInput").addEventListener("change", (e) => {
     handleSelectedFiles(e.target.files);
     e.target.value = "";
@@ -773,7 +848,6 @@ window.addEventListener("DOMContentLoaded", async () => {
     e.target.value = "";
   });
 
-  // キュー操作
   document.getElementById("uploadAllBtn").addEventListener("click", uploadAllQueuedItems);
   document.getElementById("clearQueueBtn").addEventListener("click", async () => {
     if (confirm("送信待ちキュー内のファイルをすべて削除しますか？")) {
@@ -782,12 +856,10 @@ window.addEventListener("DOMContentLoaded", async () => {
     }
   });
 
-  // 一覧検索・フィルタ・更新
   document.getElementById("searchInput").addEventListener("input", renderReceiptList);
   document.getElementById("monthFilter").addEventListener("change", renderReceiptList);
   document.getElementById("refreshListBtn").addEventListener("click", fetchReceiptsJson);
 
-  // 設定保存・認証
   document.getElementById("saveSettingsBtn").addEventListener("click", () => {
     const cid = document.getElementById("clientIdInput").value.trim();
     const rname = document.getElementById("rootFolderInput").value.trim() || "MyReceiptApp";
@@ -800,16 +872,15 @@ window.addEventListener("DOMContentLoaded", async () => {
   const handleAuthClick = async () => {
     try {
       accessToken = null;
-      await ensureAccessToken();
+      await ensureAccessToken(true);
       await ensureDriveStructure();
     } catch (err) {
-      showToast(err.message);
+      showToast(err.message, 5000);
     }
   };
   document.getElementById("googleLoginBtn").addEventListener("click", handleAuthClick);
   document.getElementById("authBadgeBtn").addEventListener("click", handleAuthClick);
 
-  // 詳細モーダル操作
   document.getElementById("closeDetailBtn").addEventListener("click", () => {
     const overlay = document.getElementById("detailOverlay");
     overlay.classList.remove("open");
@@ -819,4 +890,3 @@ window.addEventListener("DOMContentLoaded", async () => {
     document.getElementById("detailImagePane").classList.toggle("zoomed");
   });
 });
-
