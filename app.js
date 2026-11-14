@@ -256,9 +256,11 @@ async function renderQueueList() {
 // =========================================================
 // Google OAuth2 & Google Drive API v3
 // =========================================================
+const DEFAULT_CLIENT_ID = "752942004526-6b11ab4uacg328ol1e18fipfq1hl4ug5.apps.googleusercontent.com";
+
 function getSettings() {
   return {
-    clientId: (localStorage.getItem("myreceipt_client_id") || "").trim(),
+    clientId: (localStorage.getItem("myreceipt_client_id") || DEFAULT_CLIENT_ID).trim(),
     rootFolderName: (localStorage.getItem("myreceipt_root_folder") || "MyReceiptApp").trim() || "MyReceiptApp"
   };
 }
