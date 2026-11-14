@@ -14,19 +14,72 @@ const MAX_IMAGE_EDGE = 1800;
 const JPEG_QUALITY = 0.84;
 const DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 const DEFAULT_CLIENT_ID = "752942004526-6b11ab4uacg328ol1e18fipfq1hl4ug5.apps.googleusercontent.com";
+const TOKEN_STORAGE_KEY = "gdrive_access_token";
+const TOKEN_EXPIRY_KEY = "gdrive_access_token_expiry";
+const FOLDER_CACHE_KEY = "gdrive_folder_cache_v1";
 
 let dbInstance = null;
-let accessToken = sessionStorage.getItem("gdrive_access_token") || null;
+let accessToken = getStoredValidToken();
 let tokenClient = null;
 let receiptsData = [];
-let driveCache = {
-  rootFolderId: null,
-  inboxFolderId: null,
-  dataFolderId: null,
-  archiveFolderId: null,
-  subFolderIds: {},
-  blobUrls: {}
-};
+let driveCache = loadFolderCache();
+
+function getStoredValidToken() {
+  const token = localStorage.getItem(TOKEN_STORAGE_KEY);
+  const expiry = Number(localStorage.getItem(TOKEN_EXPIRY_KEY) || "0");
+  if (token && expiry > Date.now()) {
+    return token;
+  }
+  localStorage.removeItem(TOKEN_STORAGE_KEY);
+  localStorage.removeItem(TOKEN_EXPIRY_KEY);
+  return null;
+}
+
+function saveTokenWithExpiry(token, expiresInSec = 3600) {
+  accessToken = token;
+  // 有効期限の60秒前まで有効としてlocalStorageに永続化（アプリを閉じても維持）
+  const expiryTime = Date.now() + Math.max(300, Number(expiresInSec) - 60) * 1000;
+  localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  localStorage.setItem(TOKEN_EXPIRY_KEY, String(expiryTime));
+}
+
+function clearStoredToken() {
+  accessToken = null;
+  localStorage.removeItem(TOKEN_STORAGE_KEY);
+  localStorage.removeItem(TOKEN_EXPIRY_KEY);
+}
+
+function loadFolderCache() {
+  try {
+    const saved = JSON.parse(localStorage.getItem(FOLDER_CACHE_KEY) || "null");
+    if (saved && saved.rootFolderId) {
+      return { ...saved, subFolderIds: saved.subFolderIds || {}, blobUrls: {} };
+    }
+  } catch (_) {}
+  return {
+    rootFolderId: null,
+    inboxFolderId: null,
+    dataFolderId: null,
+    archiveFolderId: null,
+    subFolderIds: {},
+    blobUrls: {}
+  };
+}
+
+function saveFolderCache() {
+  try {
+    localStorage.setItem(
+      FOLDER_CACHE_KEY,
+      JSON.stringify({
+        rootFolderId: driveCache.rootFolderId,
+        inboxFolderId: driveCache.inboxFolderId,
+        dataFolderId: driveCache.dataFolderId,
+        archiveFolderId: driveCache.archiveFolderId,
+        subFolderIds: driveCache.subFolderIds || {}
+      })
+    );
+  } catch (_) {}
+}
 
 // =========================================================
 // トースト通知
@@ -318,18 +371,26 @@ function getSettings() {
 
 function updateAuthUI() {
   const badge = document.getElementById("authBadgeBtn");
-  if (accessToken) {
-    badge.textContent = "Google接続済";
+  const validToken = getStoredValidToken();
+  accessToken = validToken;
+  if (validToken) {
+    const expiry = Number(localStorage.getItem(TOKEN_EXPIRY_KEY) || "0");
+    const remainMin = Math.max(1, Math.round((expiry - Date.now()) / 60000));
+    badge.textContent = `Google接続済 (残${remainMin}分)`;
     badge.classList.add("connected");
   } else {
-    badge.textContent = "Google未接続 (タップで認証)";
+    badge.textContent = "Google未接続 (タップで接続)";
     badge.classList.remove("connected");
   }
 }
 
-function ensureAccessToken(forcePrompt = false) {
+function ensureAccessToken(forceConsent = false) {
   return new Promise((resolve, reject) => {
-    if (accessToken && !forcePrompt) return resolve(accessToken);
+    const validToken = getStoredValidToken();
+    if (validToken && !forceConsent) {
+      updateAuthUI();
+      return resolve(validToken);
+    }
 
     const { clientId } = getSettings();
     if (!clientId) {
@@ -342,28 +403,31 @@ function ensureAccessToken(forcePrompt = false) {
       return reject(new Error("Google認証ライブラリの読み込み中です。数秒後に再試行してください"));
     }
 
+    const hintEmail = localStorage.getItem("myreceipt_login_hint") || "takashiitoh4269@gmail.com";
+
     tokenClient = google.accounts.oauth2.initTokenClient({
       client_id: clientId,
       scope: DRIVE_SCOPE,
+      hint: hintEmail,
       callback: (resp) => {
         if (resp.error) {
           reject(new Error(`Google認証エラー: ${resp.error}`));
           return;
         }
-        accessToken = resp.access_token;
-        sessionStorage.setItem("gdrive_access_token", accessToken);
+        saveTokenWithExpiry(resp.access_token, resp.expires_in || 3600);
         updateAuthUI();
-        showToast("Googleドライブに接続しました");
+        showToast("Googleドライブに接続しました（1時間維持されます）");
         resolve(accessToken);
       }
     });
 
-    tokenClient.requestAccessToken({ prompt: forcePrompt ? "consent" : "" });
+    // prompt: "" を指定することで、既に同意済みの場合は再同意画面をスキップしてスムーズにトークンを取得
+    tokenClient.requestAccessToken({ prompt: forceConsent ? "consent" : "" });
   });
 }
 
 async function driveFetch(url, options = {}, stepLabel = "API通信") {
-  const token = await ensureAccessToken();
+  const token = await ensureAccessToken(false);
   const headers = new Headers(options.headers || {});
   headers.set("Authorization", `Bearer ${token}`);
 
@@ -375,10 +439,9 @@ async function driveFetch(url, options = {}, stepLabel = "API通信") {
   }
 
   if (res.status === 401) {
-    accessToken = null;
-    sessionStorage.removeItem("gdrive_access_token");
+    clearStoredToken();
     updateAuthUI();
-    throw new Error("認証の有効期限が切れました。右上のボタンから再ログインしてください。");
+    throw new Error("認証の有効期限が切れました。もう一度ボタンを押して再接続してください。");
   }
   if (!res.ok) {
     const errText = await res.text();
@@ -447,6 +510,7 @@ async function ensureDriveStructure() {
   driveCache.inboxFolderId = inboxId;
   driveCache.dataFolderId = dataId;
   driveCache.archiveFolderId = archiveId;
+  saveFolderCache();
 
   const statusBox = document.getElementById("folderStatusBox");
   if (statusBox) {
@@ -871,9 +935,10 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   const handleAuthClick = async () => {
     try {
-      accessToken = null;
-      await ensureAccessToken(true);
+      // まだ有効なトークンがあればそのままフォルダ確認のみ実行、切れていれば再同意画面なしのスマート認証 (prompt: "")
+      await ensureAccessToken(false);
       await ensureDriveStructure();
+      updateAuthUI();
     } catch (err) {
       showToast(err.message, 5000);
     }
